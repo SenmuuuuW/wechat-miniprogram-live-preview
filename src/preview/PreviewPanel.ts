@@ -8,6 +8,8 @@ export class PreviewPanel implements vscode.Disposable, PreviewConsumer {
   private readonly disposables: vscode.Disposable[] = [];
   private consumerRegistration: vscode.Disposable | undefined;
   private disposed = false;
+  private latestState: PreviewViewState = { state: "disconnected", label: "Disconnected" };
+  private latestImage: PreviewImage | undefined;
 
   public static create(callbacks: PreviewProviderCallbacks): PreviewPanel {
     const panel = vscode.window.createWebviewPanel(
@@ -44,10 +46,12 @@ export class PreviewPanel implements vscode.Disposable, PreviewConsumer {
   }
 
   public updateState(state: PreviewViewState): void {
+    this.latestState = state;
     this.post({ type: "state", ...state });
   }
 
   public showPreview(image: PreviewImage): void {
+    this.latestImage = image;
     this.post({ type: "preview", ...image });
   }
 
@@ -78,6 +82,13 @@ export class PreviewPanel implements vscode.Disposable, PreviewConsumer {
     }
     if (message.type === "previewRendered" && typeof message.generation === "number") {
       this.callbacks.onRendered(message.generation);
+      return;
+    }
+    if (message.type === "ready") {
+      this.post({ type: "state", ...this.latestState });
+      if (this.latestImage) {
+        this.post({ type: "preview", ...this.latestImage });
+      }
     }
   }
 

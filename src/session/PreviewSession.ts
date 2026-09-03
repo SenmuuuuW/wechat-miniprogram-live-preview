@@ -124,6 +124,7 @@ export class PreviewSession implements vscode.Disposable {
 
     this.lifecycleGeneration += 1;
     this.projectPath = undefined;
+    this.reconnecting = false;
     this.clearReconnectTimer();
     this.reconnectAttempt = 0;
     this.lastError = undefined;
@@ -196,7 +197,9 @@ export class PreviewSession implements vscode.Disposable {
         }
       }
     } finally {
-      this.reconnecting = false;
+      if (this.lifecycleGeneration === lifecycleGeneration) {
+        this.reconnecting = false;
+      }
     }
   }
 
@@ -211,6 +214,7 @@ export class PreviewSession implements vscode.Disposable {
     this.disposed = true;
     this.lifecycleGeneration += 1;
     this.projectPath = undefined;
+    this.reconnecting = false;
     this.clearReconnectTimer();
     this.scheduler.dispose();
     this.client.detach();

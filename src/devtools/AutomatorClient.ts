@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-import { PreviewError } from "../errors/PreviewError";
+import { PreviewError, errorMessage } from "../errors/PreviewError";
 import type { RefreshContext } from "../refresh/RefreshScheduler";
 
 export interface AutomatorRuntime {
@@ -80,11 +80,18 @@ export class AutomatorClient {
       await this.wait(delay, context?.signal);
       throwIfAborted(context?.signal);
 
-      const [page, stack, screenshot] = await Promise.all([
-        runtime.currentPage(),
-        runtime.pageStack(),
-        runtime.screenshot(),
-      ]);
+      let page: AutomatorPage | undefined;
+      let stack: readonly AutomatorPage[];
+      let screenshot: string | void;
+      try {
+        [page, stack, screenshot] = await Promise.all([
+          runtime.currentPage(),
+          runtime.pageStack(),
+          runtime.screenshot(),
+        ]);
+      } catch (error) {
+        throw classifyRuntimeError(error);
+      }
       if (typeof screenshot !== "string" || screenshot.length === 0) {
         throw new PreviewError(
           "screenshot-failed",
@@ -119,6 +126,23 @@ export class AutomatorClient {
 function normalizeScreenshotData(screenshot: string): string {
   const match = /^data:image\/png;base64,([\s\S]+)$/i.exec(screenshot.trim());
   return match?.[1] ?? screenshot;
+}
+
+function classifyRuntimeError(error: unknown): PreviewError {
+  if (error instanceof PreviewError) {
+    return error;
+  }
+
+  const message = errorMessage(error);
+  if (/connection closed|check if wechat|websocket|socket.*(?:closed|not connected)|econn(?:reset|refused)|epipe/i.test(message)) {
+    return new PreviewError(
+      "runtime-disconnected",
+      "The WeChat DevTools connection closed while capturing the preview.",
+      { cause: error, action: "Run Mini Program: Reconnect." },
+    );
+  }
+
+  return PreviewError.from(error, "screenshot-failed");
 }
 
 function normalizeInteger(value: number | undefined, fallback: number, minimum: number, maximum = Number.MAX_SAFE_INTEGER): number {
