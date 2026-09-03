@@ -32,6 +32,8 @@ export class PreviewSession implements vscode.Disposable {
   private disposed = false;
   private currentState: PreviewViewState = { state: "disconnected", label: "Disconnected" };
   private projectPath: string | undefined;
+  /** Last committed image, replayed to consumers that attach after capture. */
+  private latestImage: PreviewImage | undefined;
   private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
   private reconnecting = false;
   private reconnectAttempt = 0;
@@ -71,6 +73,9 @@ export class PreviewSession implements vscode.Disposable {
   public attachConsumer(consumer: PreviewConsumer): vscode.Disposable {
     this.consumers.add(consumer);
     consumer.updateState(this.currentState);
+    if (this.latestImage) {
+      consumer.showPreview(this.latestImage);
+    }
     return { dispose: () => this.consumers.delete(consumer) };
   }
 
@@ -100,8 +105,7 @@ export class PreviewSession implements vscode.Disposable {
       }
 
       this.client.attach(runtime);
-      runtime.on?.("console", (payload) => this.handleRuntimeLog(payload));
-      runtime.on?.("exception", (payload) => this.handleRuntimeException(payload));
+      this.attachRuntimeListeners(runtime, lifecycleGeneration, projectPath);
       this.reconnectAttempt = 0;
       this.lastError = undefined;
       this.setState({ state: "connected", label: "Connected" });
@@ -124,6 +128,7 @@ export class PreviewSession implements vscode.Disposable {
 
     this.lifecycleGeneration += 1;
     this.projectPath = undefined;
+    this.latestImage = undefined;
     this.reconnecting = false;
     this.clearReconnectTimer();
     this.reconnectAttempt = 0;
@@ -177,8 +182,7 @@ export class PreviewSession implements vscode.Disposable {
           }
 
           this.client.attach(runtime);
-          runtime.on?.("console", (payload) => this.handleRuntimeLog(payload));
-          runtime.on?.("exception", (payload) => this.handleRuntimeException(payload));
+          this.attachRuntimeListeners(runtime, lifecycleGeneration, projectPath);
           this.lastError = undefined;
           this.reconnectAttempt = 0;
           this.setState({ state: "connected", label: "Connected" });
@@ -214,6 +218,7 @@ export class PreviewSession implements vscode.Disposable {
     this.disposed = true;
     this.lifecycleGeneration += 1;
     this.projectPath = undefined;
+    this.latestImage = undefined;
     this.reconnecting = false;
     this.clearReconnectTimer();
     this.scheduler.dispose();
@@ -237,6 +242,7 @@ export class PreviewSession implements vscode.Disposable {
           pagePath: result.pagePath,
           captureLatencyMs: result.captureLatencyMs,
         };
+        this.latestImage = image;
         this.tracker.captured(context.generation, result.captureLatencyMs, result.capturedAt);
         this.setState({ state: "connected", label: "Connected" });
         for (const consumer of this.consumers) {
@@ -283,6 +289,19 @@ export class PreviewSession implements vscode.Disposable {
     }
   }
 
+  private attachRuntimeListeners(runtime: AutomatorRuntime, generation: number, projectPath: string): void {
+    runtime.on?.("console", (payload) => {
+      if (this.isCurrentRuntime(runtime, generation, projectPath)) {
+        this.handleRuntimeLog(payload);
+      }
+    });
+    runtime.on?.("exception", (payload) => {
+      if (this.isCurrentRuntime(runtime, generation, projectPath)) {
+        this.handleRuntimeException(payload);
+      }
+    });
+  }
+
   private scheduleReconnect(): void {
     if (this.reconnecting || this.reconnectTimer || !this.projectPath || this.disposed) {
       return;
@@ -303,6 +322,10 @@ export class PreviewSession implements vscode.Disposable {
 
   private isCurrentLifecycle(generation: number, projectPath: string): boolean {
     return !this.disposed && generation === this.lifecycleGeneration && this.projectPath === projectPath;
+  }
+
+  private isCurrentRuntime(runtime: AutomatorRuntime, generation: number, projectPath: string): boolean {
+    return this.isCurrentLifecycle(generation, projectPath) && this.controller.currentRuntime === runtime;
   }
 
   private discardRuntime(runtime: AutomatorRuntime): void {

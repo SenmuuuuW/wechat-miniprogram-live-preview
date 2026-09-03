@@ -158,6 +158,13 @@ function normalizePort(value: number | undefined): number {
 
 function toPreviewError(error: unknown): PreviewError {
   const message = errorMessage(error);
+  if (/invalid[_ ]login|access[_ ]token[^\n]*(?:expired|invalid)|(?:not|needs?|requires?)\s+(?:to\s+be\s+)?logged\s+in|unauthenticated|unauthorized/i.test(message)) {
+    return new PreviewError(
+      "login-required",
+      "WeChat DevTools login is required before opening this Mini Program.",
+      { cause: error, action: "Sign in to WeChat DevTools, then run Reconnect." },
+    );
+  }
   if (/port|listen|service port|automation/i.test(message)) {
     return new PreviewError(
       "automation-unavailable",

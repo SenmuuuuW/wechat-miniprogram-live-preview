@@ -10,9 +10,13 @@ This VS Code extension keeps the real WeChat Mini Program runtime behind your ed
 
 ## Status
 
-This is the `0.1.0` open-source release. The extension code, unit-test seams, VSIX packaging, and runtime probe are implemented. The end-to-end DevTools session is **not yet verified on the development machine**: DevTools reached initialization but the host blocked writes to its Application Support state and localhost automation setup. See [docs/REALITY-CHECK.md](docs/REALITY-CHECK.md) for the evidence and exact status.
+This is the `0.1.1` patch release. The extension code, unit-test seams, VSIX packaging, and runtime probe are implemented. A real local smoke session was verified on 2026-09-03 against WeChat DevTools `2.01.2510290` with `miniprogram-automator@0.12.1`: the probe connected to an Automator WebSocket, read `pages/index/index`, captured a 780x1506 simulator screenshot, and the VS Code sidebar and editor preview both showed `Connected`. WXML and shell/agent writes refreshed the real preview in approximately 1.13s and 1.16s in that session, and **Mini Program: Reconnect** recovered after a runtime restart. These observations are host- and release-specific; see [docs/REALITY-CHECK.md](docs/REALITY-CHECK.md) for the evidence and remaining limitations.
 
-No fabricated simulator screenshot is included in this repository.
+The public Automator API does not expose a compile-complete event. When DevTools reported an invalid WXML file, the extension retained the last valid screenshot and stayed connected, so structured compile-error reporting remains a known limitation.
+
+The real probe screenshots are local, machine-specific artifacts under
+`work/reality-spike/` (ignored by Git); no fabricated simulator screenshot is
+committed to this repository.
 
 ## Why
 
@@ -48,7 +52,7 @@ The integration is filesystem-based, so the same flow applies to shell scripts a
 - VS Code `1.85` or newer.
 - A WeChat DevTools installation with an Automator-compatible CLI. The extension was developed and probed on macOS. Windows conventional CLI paths are included; Linux requires an explicit `miniProgramPreview.devtoolsPath`. Runtime behavior on each host and DevTools release must be checked locally.
 - A Mini Program project containing `project.config.json`.
-- For an already-running DevTools connection (`launchDevTools: false`), an enabled DevTools Service Port/automation endpoint listening on the configured port. The exact settings label can vary by DevTools release.
+- For an already-running DevTools connection (`launchDevTools: false`), an Automator WebSocket endpoint listening on the configured port. The IDE HTTP Service Port shown by DevTools is a separate endpoint and must not be used as `automatorPort`.
 
 ## Installation
 
@@ -64,17 +68,17 @@ npm run lint
 npm run package
 ```
 
-This creates a versioned `.vsix` file in the repository root (for `0.1.0`, normally `wechat-miniprogram-live-preview-0.1.0.vsix`). Install it with the VS Code command **Extensions: Install from VSIX...**, or with the `code` CLI:
+This creates a versioned `.vsix` file in the repository root (for `0.1.1`, normally `wechat-miniprogram-live-preview-0.1.1.vsix`). Install it with the VS Code command **Extensions: Install from VSIX...**, or with the `code` CLI:
 
 ```bash
-code --install-extension wechat-miniprogram-live-preview-0.1.0.vsix
+code --install-extension wechat-miniprogram-live-preview-0.1.1.vsix
 ```
 
 The `code` command is optional; the graphical VS Code command works when it is not on `PATH`.
 
 ## Quick Start
 
-1. Install and sign in to WeChat DevTools if your project requires it.
+1. Install and sign in to WeChat DevTools before starting a project preview.
 2. Open the workspace containing `project.config.json` in VS Code.
 3. Run **Mini Program: Start Preview** from the Command Palette.
 4. If more than one project is found, select the project in the Quick Pick. Set `miniProgramPreview.projectPath` to avoid repeated selection.
@@ -103,7 +107,7 @@ All settings use the `miniProgramPreview.*` prefix and can be edited in VS Code 
 | `projectPath` | `""` | Optional Mini Program directory or `project.config.json`, relative to a workspace folder or absolute. |
 | `autoRefresh` | `true` | Refresh after relevant source changes. |
 | `refreshDelay` | `350` ms | Debounce window used to coalesce a burst of writes. |
-| `automatorPort` | `9420` | Local Automator WebSocket/service port. |
+| `automatorPort` | `9420` | Local Automator WebSocket port passed to `cli auto`; this is separate from the IDE HTTP Service Port. |
 | `launchDevTools` | `true` | Let Automator launch DevTools when starting a session; set `false` to connect to an existing endpoint. |
 | `autoReconnect` | `true` | Retry a disconnected runtime with bounded backoff. |
 | `captureDelay` | `180` ms | Initial settle delay before reading page state and capturing a screenshot. |
@@ -166,6 +170,13 @@ This covers editor saves, shell/script writes, multiple files changed close toge
 
 `PerformanceTracker` keeps timing data in memory only. It records the refresh generation, detection time, debounce completion, screenshot capture latency, and the time the webview reports that the image finished loading. No telemetry is sent. The defaults prioritize coalescing and a stable capture over an unverified fixed latency promise; do not interpret the settings as a benchmark.
 
+The latest local smoke session measured five WXSS writes at 1,635-2,778 ms to
+the DevTools image and 2,089-2,292 ms to the VS Code image (medians 1,674 ms
+and 2,146 ms). Three WXML writes measured 1,070-1,978 ms and 421-730 ms,
+respectively; one direct agent filesystem write measured 721 ms and 885 ms.
+See [docs/REALITY-CHECK.md](docs/REALITY-CHECK.md) for the sample counts,
+averages, coalescing observation, and limits of these measurements.
+
 ## Troubleshooting
 
 ### DevTools CLI not found
@@ -174,7 +185,11 @@ Install WeChat DevTools or set `miniProgramPreview.devtoolsPath` to the app bund
 
 ### Automation or Service Port unavailable
 
-If the error mentions a port, listen failure, or Service Port, confirm that the selected port is free and that DevTools automation is enabled when connecting to an existing instance. Check `miniProgramPreview.automatorPort`, then run **Mini Program: Reconnect**. A host policy that prevents DevTools from writing its own Application Support data can fail before a WebSocket is opened; the probe documents this separately from extension unit-test results.
+If the error mentions a port, listen failure, or Service Port, confirm that the selected Automator port is free and that DevTools automation is enabled when connecting to an existing instance. `automatorPort` is the WebSocket port passed to `cli auto`; it is not the IDE HTTP Service Port from DevTools settings. Check `miniProgramPreview.automatorPort`, then run **Mini Program: Reconnect**. A host policy that prevents DevTools from writing its own Application Support data can fail before a WebSocket is opened; the probe documents this separately from extension unit-test results.
+
+### DevTools login required
+
+If the error mentions `INVALID_LOGIN` or an expired access token, sign in to WeChat DevTools (the CLI `islogin` check alone does not prove that a project automation session can open), then run **Mini Program: Reconnect**.
 
 ### No Mini Program project found
 
@@ -201,13 +216,13 @@ npm run spike -- \
   --json
 ```
 
-Only a returned screenshot and a probe status of `VERIFIED` justify calling the runtime path end-to-end verified. The current report is **BLOCKED / NOT REAL-WORLD VERIFIED** on the development machine. See [docs/REALITY-CHECK.md](docs/REALITY-CHECK.md) before relying on a particular DevTools release or host setup.
+Only a returned screenshot and a probe status of `VERIFIED` justify calling the runtime path end-to-end verified. The current report contains a **VERIFIED local smoke session** plus historical blocked attempts; it is not a compatibility guarantee for every DevTools release or host. See [docs/REALITY-CHECK.md](docs/REALITY-CHECK.md) before relying on a particular DevTools release or host setup.
 
 ## Limitations and Non-Goals
 
-Version `0.1.0` does not provide an MCP server, AI vision agent, DOM inspector, element picker, pixel-stream video, WXML-to-HTML renderer, remote-device streaming, cloud service, multi-simulator dashboard, or per-agent SDK integration. It also does not replace WeChat DevTools. The external DevTools runtime remains responsible for compilation and rendering.
+Version `0.1.1` does not provide an MCP server, AI vision agent, DOM inspector, element picker, pixel-stream video, WXML-to-HTML renderer, remote-device streaming, cloud service, multi-simulator dashboard, or per-agent SDK integration. It also does not replace WeChat DevTools. The external DevTools runtime remains responsible for compilation and rendering.
 
-The public Automator surface inspected for this release exposes page and screenshot operations but no compile-complete event. Refresh readiness is therefore inferred through bounded settling and screenshot stability. Service Port behavior, background/minimized-window behavior, reconnects after every DevTools release, screenshot latency, and a successful real simulator capture must be verified on the target machine.
+The public Automator surface inspected for this release exposes page and screenshot operations but no compile-complete event. Refresh readiness is therefore inferred through bounded settling and screenshot stability. The local evidence does not establish behavior for other DevTools releases, operating systems, background/minimized-window modes, or projects with materially different build times.
 
 ## Development and Testing
 
@@ -221,7 +236,7 @@ npm run package
 
 `npm test` compiles the TypeScript sources and runs the Node test suite. Tests use injected filesystem, clock, locator, and runtime boundaries where applicable, so they are deterministic and do not require a GUI. GitHub Actions intentionally does **not** run the real DevTools probe: hosted runners do not provide the WeChat DevTools application or a usable simulator/service-port session.
 
-For a local runtime investigation, use `npm run spike` as described above and record the result in `docs/REALITY-CHECK.md` without upgrading an unverified observation to `VERIFIED`.
+For a local runtime investigation, use `npm run spike` as described above and record the result in `docs/REALITY-CHECK.md`. Keep host-specific observations separate from the verified local smoke evidence and do not generalize them to other DevTools releases.
 
 ## Contributing
 

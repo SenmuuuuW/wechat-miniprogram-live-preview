@@ -92,7 +92,7 @@ export class AutomatorClient {
       } catch (error) {
         throw classifyRuntimeError(error);
       }
-      if (typeof screenshot !== "string" || screenshot.length === 0) {
+      if (typeof screenshot !== "string" || screenshot.trim().length === 0) {
         throw new PreviewError(
           "screenshot-failed",
           "WeChat DevTools returned an empty simulator screenshot.",
@@ -101,6 +101,13 @@ export class AutomatorClient {
       }
 
       latestData = normalizeScreenshotData(screenshot);
+      if (latestData.length === 0) {
+        throw new PreviewError(
+          "screenshot-failed",
+          "WeChat DevTools returned an empty simulator screenshot.",
+          { action: "Check that the Mini Program simulator is open, then reconnect." },
+        );
+      }
       latestPagePath = page?.path;
       latestStack = stack.map((item) => item.path);
       const hash = createHash("sha1").update(latestData).digest("hex");
@@ -124,8 +131,12 @@ export class AutomatorClient {
 }
 
 function normalizeScreenshotData(screenshot: string): string {
-  const match = /^data:image\/png;base64,([\s\S]+)$/i.exec(screenshot.trim());
-  return match?.[1] ?? screenshot;
+  const trimmed = screenshot.trim();
+  const match = /^data:[^,]+,([\s\S]*)$/i.exec(trimmed);
+  const payload = match?.[1] ?? trimmed;
+  // Automator normally returns raw base64, but releases and wrappers may add a
+  // data-URI prefix or line wrapping. Whitespace is not meaningful in base64.
+  return payload.replace(/\s+/g, "");
 }
 
 function classifyRuntimeError(error: unknown): PreviewError {

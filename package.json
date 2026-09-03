@@ -2,7 +2,7 @@
   "name": "wechat-miniprogram-live-preview",
   "displayName": "WeChat Mini Program Live Preview",
   "description": "See a real WeChat Mini Program runtime inside VS Code while coding with filesystem-based AI agents.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publisher": "senmuuuw",
   "license": "MIT",
   "repository": {
@@ -64,6 +64,7 @@
         {
           "id": "miniProgramPreview.sidebar",
           "name": "Mini Program Preview",
+          "type": "webview",
           "when": "true"
         }
       ]
@@ -97,7 +98,7 @@
           "default": 9420,
           "minimum": 1,
           "maximum": 65535,
-          "description": "Local automation service port passed to WeChat DevTools."
+          "description": "Local Automator WebSocket port passed to cli auto; separate from the IDE HTTP Service Port."
         },
         "miniProgramPreview.launchDevTools": {
           "type": "boolean",
@@ -127,7 +128,7 @@
   },
   "scripts": {
     "compile": "node node_modules/typescript/bin/tsc -p ./tsconfig.json",
-    "test": "npm run compile && node --test out/test/DevToolsLocator.test.js out/test/ProjectDetector.test.js out/test/project/ProjectDetector.test.js out/test/refresh/RefreshScheduler.test.js",
+    "test": "npm run compile && node --test out/test/AutomatorClient.test.js out/test/DevToolsController.test.js out/test/DevToolsLocator.test.js out/test/PreviewSession.test.js out/test/ProjectDetector.test.js out/test/project/ProjectDetector.test.js out/test/refresh/RefreshScheduler.test.js",
     "lint": "node node_modules/typescript/bin/tsc -p ./tsconfig.json --noEmit",
     "package": "node node_modules/@vscode/vsce/vsce package --dependencies",
     "spike": "npm run compile && node out/scripts/probe-wechat-runtime.js"

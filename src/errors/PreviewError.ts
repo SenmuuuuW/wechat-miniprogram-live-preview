@@ -2,6 +2,7 @@ export type PreviewErrorCode =
   | "devtools-not-found"
   | "project-not-found"
   | "automation-unavailable"
+  | "login-required"
   | "runtime-disconnected"
   | "runtime-exception"
   | "screenshot-failed"

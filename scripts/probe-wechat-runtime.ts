@@ -336,6 +336,76 @@ function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
 }
 
+/** Keep Automator Page instances out of the JSON report; they retain a circular connection. */
+function summarizePage(value: unknown): Record<string, unknown> {
+  const page = asRecord(value);
+  const path = typeof page.path === "string" ? page.path : undefined;
+  const query = page.query === undefined ? undefined : jsonSafe(page.query);
+  return {
+    ...(path ? { path } : {}),
+    ...(query !== undefined ? { query } : {}),
+  };
+}
+
+function jsonSafe(value: unknown, seen = new WeakSet<object>()): unknown {
+  if (value === null || typeof value !== "object") {
+    return value;
+  }
+  if (seen.has(value)) {
+    return "[Circular]";
+  }
+  seen.add(value);
+  if (Array.isArray(value)) {
+    return value.map((item) => jsonSafe(item, seen));
+  }
+  const output: Record<string, unknown> = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (typeof item !== "function" && typeof item !== "symbol") {
+      output[key] = jsonSafe(item, seen);
+    }
+  }
+  return output;
+}
+
+function normalizeScreenshotData(value: string): string {
+  const trimmed = value.trim();
+  const match = /^data:[^,]+,([\s\S]*)$/i.exec(trimmed);
+  return (match?.[1] ?? trimmed).replace(/\s+/g, "");
+}
+
+async function captureStableScreenshot(miniProgram: { screenshot(): Promise<string | void> }): Promise<string> {
+  let previous: string | undefined;
+  let latest: string | undefined;
+
+  // DevTools can return a small blank placeholder on the first frame after launch.
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    if (attempt > 0) {
+      await delay(350);
+    }
+    const screenshot = await miniProgram.screenshot();
+    if (typeof screenshot !== "string" || screenshot.trim().length === 0) {
+      continue;
+    }
+    latest = normalizeScreenshotData(screenshot);
+    if (latest.length === 0) {
+      continue;
+    }
+    if (previous === latest) {
+      return latest;
+    }
+    previous = latest;
+  }
+
+  if (!latest) {
+    throw new Error("Automator returned no screenshot data.");
+  }
+  return latest;
+}
+
+async function delay(delayMs: number): Promise<void> {
+  await new Promise<void>((resolveDelay) => setTimeout(resolveDelay, delayMs));
+}
+
 async function runRuntimeProbe(
   options: ProbeOptions,
   cliPath: string | undefined,
@@ -419,19 +489,21 @@ async function runRuntimeProbe(
     let screenshotBytes: number | undefined;
 
     try {
-      currentPage = await miniProgram.currentPage();
+      const page = await miniProgram.currentPage();
+      currentPage = page ? summarizePage(page) : undefined;
     } catch (error) {
       currentPage = { error: errorMessage(error) };
     }
     try {
-      pageStack = await miniProgram.pageStack();
+      const stack = await miniProgram.pageStack();
+      pageStack = Array.isArray(stack) ? stack.map((page) => summarizePage(page)) : [];
     } catch (error) {
       pageStack = { error: errorMessage(error) };
     }
     try {
-      const screenshotData = await miniProgram.screenshot();
-      if (typeof screenshotData === "string" && screenshotData.length > 0) {
-        const base64 = screenshotData.replace(/^data:image\/png;base64,/, "");
+      const screenshotData = await captureStableScreenshot(miniProgram);
+      if (screenshotData.length > 0) {
+        const base64 = screenshotData;
         const target = resolve(options.screenshotPath ?? join(process.cwd(), "work", "reality-spike", "simulator.png"));
         mkdirSync(dirname(target), { recursive: true });
         writeFileSync(target, Buffer.from(base64, "base64"));
