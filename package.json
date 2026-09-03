@@ -1,0 +1,144 @@
+{
+  "name": "wechat-miniprogram-live-preview",
+  "displayName": "WeChat Mini Program Live Preview",
+  "description": "See a real WeChat Mini Program runtime inside VS Code while coding with filesystem-based AI agents.",
+  "version": "0.1.0",
+  "publisher": "senmuuuw",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/SenmuuuuW/wechat-miniprogram-live-preview"
+  },
+  "bugs": {
+    "url": "https://github.com/SenmuuuuW/wechat-miniprogram-live-preview/issues"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other",
+    "Visualization"
+  ],
+  "keywords": [
+    "wechat",
+    "miniprogram",
+    "mini program",
+    "live preview",
+    "ai coding"
+  ],
+  "activationEvents": [
+    "onStartupFinished",
+    "onView:miniProgramPreview.sidebar",
+    "onCommand:miniProgramPreview.start",
+    "onCommand:miniProgramPreview.stop",
+    "onCommand:miniProgramPreview.refresh",
+    "onCommand:miniProgramPreview.open",
+    "onCommand:miniProgramPreview.reconnect"
+  ],
+  "main": "./out/src/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "miniProgramPreview.start",
+        "title": "Mini Program: Start Preview"
+      },
+      {
+        "command": "miniProgramPreview.stop",
+        "title": "Mini Program: Stop Preview"
+      },
+      {
+        "command": "miniProgramPreview.refresh",
+        "title": "Mini Program: Refresh Preview"
+      },
+      {
+        "command": "miniProgramPreview.open",
+        "title": "Mini Program: Open Preview"
+      },
+      {
+        "command": "miniProgramPreview.reconnect",
+        "title": "Mini Program: Reconnect"
+      }
+    ],
+    "views": {
+      "explorer": [
+        {
+          "id": "miniProgramPreview.sidebar",
+          "name": "Mini Program Preview",
+          "when": "true"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Mini Program Preview",
+      "properties": {
+        "miniProgramPreview.devtoolsPath": {
+          "type": "string",
+          "default": "",
+          "description": "Optional path to the WeChat DevTools app or CLI executable."
+        },
+        "miniProgramPreview.projectPath": {
+          "type": "string",
+          "default": "",
+          "description": "Optional Mini Program directory or project.config.json path, relative to the workspace or absolute."
+        },
+        "miniProgramPreview.autoRefresh": {
+          "type": "boolean",
+          "default": true,
+          "description": "Refresh the preview after Mini Program source files change."
+        },
+        "miniProgramPreview.refreshDelay": {
+          "type": "number",
+          "default": 350,
+          "minimum": 0,
+          "description": "Debounce delay in milliseconds used to coalesce filesystem writes."
+        },
+        "miniProgramPreview.automatorPort": {
+          "type": "number",
+          "default": 9420,
+          "minimum": 1,
+          "maximum": 65535,
+          "description": "Local automation service port passed to WeChat DevTools."
+        },
+        "miniProgramPreview.launchDevTools": {
+          "type": "boolean",
+          "default": true,
+          "description": "Allow the Automator launcher to start WeChat DevTools when needed."
+        },
+        "miniProgramPreview.autoReconnect": {
+          "type": "boolean",
+          "default": true,
+          "description": "Retry a disconnected runtime with bounded backoff."
+        },
+        "miniProgramPreview.captureDelay": {
+          "type": "number",
+          "default": 180,
+          "minimum": 0,
+          "description": "Initial adaptive wait in milliseconds before capturing a screenshot."
+        },
+        "miniProgramPreview.maxRefreshRetries": {
+          "type": "number",
+          "default": 3,
+          "minimum": 1,
+          "maximum": 8,
+          "description": "Maximum screenshot stability attempts per refresh."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "node node_modules/typescript/bin/tsc -p ./tsconfig.json",
+    "test": "npm run compile && node --test out/test/DevToolsLocator.test.js out/test/ProjectDetector.test.js out/test/project/ProjectDetector.test.js out/test/refresh/RefreshScheduler.test.js",
+    "lint": "node node_modules/typescript/bin/tsc -p ./tsconfig.json --noEmit",
+    "package": "node node_modules/@vscode/vsce/vsce package --dependencies",
+    "spike": "npm run compile && node out/scripts/probe-wechat-runtime.js"
+  },
+  "dependencies": {
+    "miniprogram-automator": "^0.12.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/vscode": "^1.85.0",
+    "@vscode/vsce": "^3.9.2",
+    "typescript": "^7.0.2"
+  }
+}

@@ -1,0 +1,17 @@
+.git/**
+.github/**
+.vscode/**
+src/**
+test/**
+scripts/**
+work/**
+tsconfig.json
+*.tsbuildinfo
+README.md
+CHANGELOG.md
+docs/**
+node_modules/miniprogram-automator/test/**
+out/test/**
+out/scripts/**
+**/*.d.ts
+**/*.js.map
