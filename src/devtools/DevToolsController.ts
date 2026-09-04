@@ -1,4 +1,5 @@
 import type { ILaunchOptions } from "miniprogram-automator/out/Launcher";
+import { createServer } from "node:net";
 
 import { DevToolsLocator } from "./DevToolsLocator";
 import type { AutomatorRuntime } from "./AutomatorClient";
@@ -12,6 +13,7 @@ export interface AutomatorFactory {
 export interface DevToolsControllerOptions {
   readonly locator?: DevToolsLocator;
   readonly factory?: AutomatorFactory;
+  /** Explicit Automator port. Omit/0 to allocate a fresh ephemeral port per launch. */
   readonly port?: number;
   readonly launchDevTools?: boolean;
 }
@@ -45,7 +47,7 @@ const defaultFactory: AutomatorFactory = {
 export class DevToolsController {
   private readonly locator: DevToolsLocator;
   private readonly factory: AutomatorFactory;
-  private readonly port: number;
+  private readonly port: number | undefined;
   private readonly launchDevTools: boolean;
   private runtime: AutomatorRuntime | undefined;
   private lastStart: DevToolsStartOptions | undefined;
@@ -79,7 +81,7 @@ export class DevToolsController {
     try {
       const runtime = this.launchDevTools
         ? await this.launch(options)
-        : await this.factory.connect({ wsEndpoint: `ws://127.0.0.1:${this.port}` });
+        : await this.factory.connect({ wsEndpoint: `ws://127.0.0.1:${this.port ?? 9420}` });
 
       // A newer start/disconnect may have superseded this asynchronous launch.
       // Do not install an obsolete runtime or change the newer connection state.
@@ -130,10 +132,14 @@ export class DevToolsController {
 
   private async launch(options: DevToolsStartOptions): Promise<AutomatorRuntime> {
     const location = await this.locator.locate(options.configuredPath);
+    // The Automator socket is runtime state. In auto mode choose a fresh free
+    // port for every launch/reconnect so a DevTools restart cannot strand us on
+    // an endpoint owned by the previous process.
+    const port = this.port ?? await findFreePort();
     return this.factory.launch({
       cliPath: location.cliPath,
       projectPath: options.projectPath,
-      port: this.port,
+      port,
       trustProject: true,
     });
   }
@@ -151,11 +157,25 @@ function disconnectRuntime(runtime: AutomatorRuntime): void {
   }
 }
 
-function normalizePort(value: number | undefined): number {
-  if (value === undefined || !Number.isFinite(value)) {
-    return 9420;
+function normalizePort(value: number | undefined): number | undefined {
+  if (value === undefined || !Number.isFinite(value) || value === 0) {
+    return undefined;
   }
   return Math.min(65535, Math.max(1, Math.floor(value)));
+}
+
+async function findFreePort(): Promise<number> {
+  const server = createServer();
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => resolve());
+  });
+  const address = server.address();
+  await new Promise<void>((resolve) => server.close(() => resolve()));
+  if (!address || typeof address === "string" || !address.port) {
+    throw new PreviewError("automation-unavailable", "Unable to allocate a local Automator port.");
+  }
+  return address.port;
 }
 
 function toPreviewError(error: unknown): PreviewError {

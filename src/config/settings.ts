@@ -5,7 +5,7 @@ export interface PreviewSettings {
   readonly projectPath: string | undefined;
   readonly autoRefresh: boolean;
   readonly refreshDelay: number;
-  readonly automatorPort: number;
+  readonly automatorPort: number | undefined;
   readonly launchDevTools: boolean;
   readonly autoReconnect: boolean;
   readonly captureDelay: number;
@@ -21,7 +21,7 @@ export function getPreviewSettings(): PreviewSettings {
     projectPath: nonEmpty(configuration.get<string>("projectPath", "")),
     autoRefresh: configuration.get<boolean>("autoRefresh", true),
     refreshDelay: normalizedInteger(configuration.get<number>("refreshDelay", 350), 350, 0),
-    automatorPort: normalizedInteger(configuration.get<number>("automatorPort", 9420), 9420, 1, 65535),
+    automatorPort: normalizedPort(configuration.get<number>("automatorPort", 0)),
     launchDevTools: configuration.get<boolean>("launchDevTools", true),
     autoReconnect: configuration.get<boolean>("autoReconnect", true),
     captureDelay: normalizedInteger(configuration.get<number>("captureDelay", 180), 180, 0),
@@ -32,6 +32,11 @@ export function getPreviewSettings(): PreviewSettings {
       8,
     ),
   };
+}
+
+function normalizedPort(value: number): number | undefined {
+  if (!Number.isFinite(value) || value === 0) return undefined;
+  return Math.min(65535, Math.max(1, Math.floor(value)));
 }
 
 function nonEmpty(value: string): string | undefined {

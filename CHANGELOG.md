@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.0.1
+
+- Allocate a fresh Automator port for every automatic start/reconnect.
+- Treat configured ports as explicit overrides and avoid reusing stale runtime endpoints.
+
 ## 2.0.0 - 2026-09-04
 
 ### Added

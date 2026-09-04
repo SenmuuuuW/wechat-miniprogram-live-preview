@@ -95,3 +95,21 @@ test("classifies an expired DevTools access token as a login requirement", async
   );
   assert.equal(controller.state, "error");
 });
+
+test("allocates a fresh Automator port for each automatic launch", async () => {
+  const ports: number[] = [];
+  const runtime = new FakeRuntime();
+  const controller = new DevToolsController({
+    launchDevTools: true,
+    locator: { locate: async () => ({ cliPath: "/fake/cli", source: "configured" }) } as never,
+    factory: {
+      launch: async (options) => { ports.push(options.port as number); return runtime; },
+      connect: async () => runtime,
+    },
+  });
+  await controller.start({ projectPath: "/project" });
+  await controller.reconnect();
+  assert.equal(ports.length, 2);
+  assert.ok(ports[0] > 0 && ports[1] > 0);
+  assert.notEqual(ports[0], ports[1]);
+});

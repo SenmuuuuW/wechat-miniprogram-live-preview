@@ -2,7 +2,7 @@
   "name": "wechat-miniprogram-live-preview",
   "displayName": "WeChat Mini Program Live Preview",
   "description": "See a real WeChat Mini Program runtime inside VS Code while coding with filesystem-based AI agents.",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "publisher": "senmuuuw",
   "license": "MIT",
   "repository": {
@@ -95,10 +95,10 @@
         },
         "miniProgramPreview.automatorPort": {
           "type": "number",
-          "default": 9420,
-          "minimum": 1,
+          "default": 0,
+          "minimum": 0,
           "maximum": 65535,
-          "description": "Local Automator WebSocket port passed to cli auto; separate from the IDE HTTP Service Port."
+          "description": "Optional explicit Automator WebSocket port. Leave at 0 to allocate a fresh port for each runtime session; separate from the IDE HTTP Service Port."
         },
         "miniProgramPreview.launchDevTools": {
           "type": "boolean",
