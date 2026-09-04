@@ -6,6 +6,7 @@ export type PreviewErrorCode =
   | "runtime-disconnected"
   | "runtime-exception"
   | "screenshot-failed"
+  | "interaction-unsupported"
   | "invalid-configuration"
   | "unknown";
 

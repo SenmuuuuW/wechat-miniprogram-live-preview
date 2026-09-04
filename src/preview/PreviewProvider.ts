@@ -1,9 +1,15 @@
 import * as vscode from "vscode";
 
+import {
+  parsePreviewWebviewMessage,
+  type InputPreviewMessage,
+  type ScrollPreviewMessage,
+  type TapPreviewMessage,
+} from "./PreviewMessages";
 import { previewWebviewHtml } from "./webviewHtml";
 
 export interface PreviewViewState {
-  readonly state: "disconnected" | "connecting" | "connected" | "updating" | "error";
+  readonly state: "disconnected" | "connecting" | "connected" | "updating" | "interacting" | "typing" | "error";
   readonly label: string;
   readonly error?: string;
 }
@@ -11,6 +17,8 @@ export interface PreviewViewState {
 export interface PreviewImage {
   readonly generation: number;
   readonly data: string;
+  /** Real PNG dimensions used to bind Webview interactions to this exact frame. */
+  readonly screenshotSize?: { readonly width: number; readonly height: number };
   readonly pagePath: string | undefined;
   readonly captureLatencyMs: number;
 }
@@ -19,12 +27,18 @@ export interface PreviewConsumer {
   updateState(state: PreviewViewState): void;
   showPreview(image: PreviewImage): void;
   showError(message: string): void;
+  /** A recoverable runtime limitation which must not discard the valid frame. */
+  showNotice?(message: string): void;
   dispose(): void;
 }
 
 export interface PreviewProviderCallbacks {
   readonly onReconnect: () => void;
   readonly onRendered: (generation: number) => void;
+  readonly onRefresh?: () => void;
+  readonly onBack?: () => void;
+  readonly onExitTyping?: () => void;
+  readonly onInteraction?: (message: TapPreviewMessage | ScrollPreviewMessage | InputPreviewMessage) => void;
 }
 
 /** Sidebar view wrapper. It contains no DevTools connection of its own. */
@@ -72,6 +86,10 @@ export class PreviewProvider implements vscode.WebviewViewProvider, vscode.Dispo
     this.post({ type: "error", message });
   }
 
+  public showNotice(message: string): void {
+    this.post({ type: "notice", message });
+  }
+
   public dispose(): void {
     for (const disposable of this.viewDisposables.splice(0)) {
       disposable.dispose();
@@ -83,30 +101,41 @@ export class PreviewProvider implements vscode.WebviewViewProvider, vscode.Dispo
   }
 
   private handleMessage(message: unknown): void {
-    if (!isMessage(message)) {
+    const parsed = parsePreviewWebviewMessage(message);
+    if (!parsed) {
       return;
     }
-    if (message.type === "reconnect") {
-      this.callbacks.onReconnect();
-      return;
-    }
-    if (message.type === "previewRendered" && typeof message.generation === "number") {
-      this.callbacks.onRendered(message.generation);
-      return;
-    }
-    if (message.type === "ready") {
-      this.post({ type: "state", ...this.latestState });
-      if (this.latestImage) {
-        this.post({ type: "preview", ...this.latestImage });
-      }
+    switch (parsed.type) {
+      case "reconnect":
+        this.callbacks.onReconnect();
+        return;
+      case "refresh":
+        this.callbacks.onRefresh?.();
+        return;
+      case "back":
+        this.callbacks.onBack?.();
+        return;
+      case "exitTyping":
+        this.callbacks.onExitTyping?.();
+        return;
+      case "tap":
+      case "scroll":
+      case "input":
+        this.callbacks.onInteraction?.(parsed);
+        return;
+      case "previewRendered":
+        this.callbacks.onRendered(parsed.generation);
+        return;
+      case "ready":
+        this.post({ type: "state", ...this.latestState });
+        if (this.latestImage) {
+          this.post({ type: "preview", ...this.latestImage });
+        }
+        return;
     }
   }
 
   private post(message: unknown): void {
     void this.view?.webview.postMessage(message);
   }
-}
-
-function isMessage(value: unknown): value is { type: string; generation?: unknown } {
-  return typeof value === "object" && value !== null && "type" in value;
 }

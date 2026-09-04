@@ -1,16 +1,18 @@
-# WeChat Mini Program Live Preview
+# WeChat Mini Program Interactive Live Preview
 
 Build with AI agents.  
 See your WeChat Mini Program instantly.  
 No DevTools switching.
 
-This VS Code extension keeps the real WeChat Mini Program runtime behind your editor. An agent (or a person) changes files in the workspace, the extension coalesces those changes, WeChat DevTools updates the project, and the current simulator screenshot appears in a sidebar or editor panel.
+This VS Code extension keeps the real WeChat Mini Program runtime behind your editor. An agent (or a person) changes files in the workspace, the extension coalesces those changes, WeChat DevTools updates the project, and the current simulator screenshot appears in a sidebar or editor panel. Version 2 adds an interaction layer over that real runtime: it maps a click or drag on the current screenshot to a public Automator operation, then captures the resulting frame.
 
 > **Real runtime, not a renderer.** The preview is sourced from WeChat DevTools through `miniprogram-automator`; this project does not translate WXML into HTML or attempt to emulate WXSS, `wx` APIs, navigation, lifecycle behavior, WXS, or native components.
 
 ## Status
 
-This is the `0.1.1` patch release. The extension code, unit-test seams, VSIX packaging, and runtime probe are implemented. A real local smoke session was verified on 2026-09-03 against WeChat DevTools `2.01.2510290` with `miniprogram-automator@0.12.1`: the probe connected to an Automator WebSocket, read `pages/index/index`, captured a 780x1506 simulator screenshot, and the VS Code sidebar and editor preview both showed `Connected`. WXML and shell/agent writes refreshed the real preview in approximately 1.13s and 1.16s in that session, and **Mini Program: Reconnect** recovered after a runtime restart. These observations are host- and release-specific; see [docs/REALITY-CHECK.md](docs/REALITY-CHECK.md) for the evidence and remaining limitations.
+This is the `2.0.0` interactive-preview release. The interaction pipeline, message validation, runtime-operation scheduler, VSIX packaging, and unit tests are implemented. The prior real local smoke session remains verified on 2026-09-03 against WeChat DevTools `2.01.2510290` with `miniprogram-automator@0.12.1`: the probe connected to an Automator WebSocket, read `pages/index/index`, captured a 780x1506 simulator screenshot, and the VS Code sidebar and editor preview both showed `Connected`. WXML and shell/agent writes refreshed the real preview in approximately 1.13s and 1.16s in that session, and **Mini Program: Reconnect** recovered after a runtime restart.
+
+The v2 interaction implementation is deliberately more conservative than its UI: a tap requires real element discovery plus usable geometry, typing requires a resolved native input or textarea, scrolling uses public page APIs, and every action is serialized with screenshot capture. The latest v2 probe established an Automator connection and read the active page, but its fresh screenshot request was incomplete; selector and element APIs were not verified in that connection. Therefore tap, scroll, typing, and in-preview navigation are **implemented but not yet end-to-end verified** on the current runtime. These observations are host- and release-specific; see [docs/REALITY-CHECK.md](docs/REALITY-CHECK.md) for the evidence and capability status.
 
 The public Automator API does not expose a compile-complete event. When DevTools reported an invalid WXML file, the extension retained the last valid screenshot and stayed connected, so structured compile-error reporting remains a known limitation.
 
@@ -39,6 +41,8 @@ The integration is filesystem-based, so the same flow applies to shell scripts a
 ## Features
 
 - Real WeChat DevTools simulator screenshots inside a VS Code sidebar and an editor-area preview panel.
+- Interactive preview controls: coordinate-correct tap dispatch, drag/wheel scroll, native input capture, and back navigation. Operations use public Automator APIs when the connected DevTools release exposes them; unavailable capabilities leave the latest valid frame in place and show an explanation.
+- Generation-bound Webview messages, bounded selector discovery, element geometry validation, and a single scheduler that serializes user actions with code-triggered refreshes.
 - Filesystem-based, agent-agnostic change detection. It handles VS Code saves and writes made by shells, scripts, and coding agents outside the editor.
 - Watches `.wxml`, `.wxss`, `.js`, `.ts`, `.json`, and `.wxs` files, while excluding `node_modules`, `.git`, `dist`, `build`, and `miniprogram_npm`.
 - Debounced and coalesced refreshes, serialized runtime work, cooperative cancellation, and stale-result protection. A burst of edits produces one latest preview instead of a screenshot per write.
@@ -68,10 +72,10 @@ npm run lint
 npm run package
 ```
 
-This creates a versioned `.vsix` file in the repository root (for `0.1.1`, normally `wechat-miniprogram-live-preview-0.1.1.vsix`). Install it with the VS Code command **Extensions: Install from VSIX...**, or with the `code` CLI:
+This creates a versioned `.vsix` file in the repository root (for `2.0.0`, normally `wechat-miniprogram-live-preview-2.0.0.vsix`). Install it with the VS Code command **Extensions: Install from VSIX...**, or with the `code` CLI:
 
 ```bash
-code --install-extension wechat-miniprogram-live-preview-0.1.1.vsix
+code --install-extension wechat-miniprogram-live-preview-2.0.0.vsix
 ```
 
 The `code` command is optional; the graphical VS Code command works when it is not on `PATH`.
@@ -84,6 +88,7 @@ The `code` command is optional; the graphical VS Code command works when it is n
 4. If more than one project is found, select the project in the Quick Pick. Set `miniProgramPreview.projectPath` to avoid repeated selection.
 5. The **Mini Program Preview** view appears in the Explorer. Use **Mini Program: Open Preview** for a larger editor-area panel.
 6. Edit or let an agent edit Mini Program source files. The preview refreshes after the configured debounce period.
+7. When the connected Automator runtime supports the necessary public APIs, click/tap the current preview frame to act on a resolved native element, drag or use the wheel to scroll, and use **Back** to navigate backward. A tapped native input or textarea enters keyboard capture; press Escape to leave it.
 
 If DevTools is already running and you want the extension to connect rather than launch it, set `miniProgramPreview.launchDevTools` to `false`, enable the DevTools automation/service port, and use the same `miniProgramPreview.automatorPort` value.
 
@@ -94,7 +99,7 @@ If DevTools is already running and you want the extension to connect rather than
 | **Mini Program: Start Preview** | Detects/selects a project, launches or connects to DevTools, and captures the initial preview. |
 | **Mini Program: Stop Preview** | Disconnects this extension's Automator session. It does not kill the external DevTools process. |
 | **Mini Program: Refresh Preview** | Requests an immediate screenshot refresh. |
-| **Mini Program: Open Preview** | Opens the editor-area preview panel while sharing the existing session with the sidebar. |
+| **Mini Program: Open Preview** | Opens the editor-area interactive preview panel while sharing the existing session with the sidebar. |
 | **Mini Program: Reconnect** | Reconnects to the last project with bounded retries. |
 
 ## Settings
@@ -144,7 +149,7 @@ current page + page stack + simulator screenshot
 sidebar and editor preview webviews
 ```
 
-The extension keeps one `PreviewSession` and one Automator runtime for all preview consumers. A screenshot is published only if its refresh generation is still current, so a slow result from an older edit cannot overwrite a newer one. The Automator adapter reads the current page, page stack, screenshot, console events, and exception events exposed by the observed public API. Since `miniprogram-automator@0.12.1` does not expose a compile-ready callback in the inspected declarations/source, the client uses an adaptive delay and screenshot hash stability check instead of inventing a `compile()` API.
+The extension keeps one `PreviewSession` and one Automator runtime for all preview consumers. A screenshot is published only if its refresh generation is still current, so a slow result from an older edit cannot overwrite a newer one. The Automator adapter reads the current page, page stack, screenshot, console events, and exception events exposed by the observed public API. For an interaction, the Webview sends only validated, generation-bound image coordinates; the session maps them to the runtime viewport, resolves real elements through public selector/geometry APIs, performs the supported Automator action, then captures the next frame. The scheduler prevents a refresh from racing an action. Since `miniprogram-automator@0.12.1` does not expose a compile-ready callback in the inspected declarations/source, the client uses an adaptive delay and screenshot hash stability check instead of inventing a `compile()` API.
 
 ## AI Coding Workflow
 
@@ -216,13 +221,13 @@ npm run spike -- \
   --json
 ```
 
-Only a returned screenshot and a probe status of `VERIFIED` justify calling the runtime path end-to-end verified. The current report contains a **VERIFIED local smoke session** plus historical blocked attempts; it is not a compatibility guarantee for every DevTools release or host. See [docs/REALITY-CHECK.md](docs/REALITY-CHECK.md) before relying on a particular DevTools release or host setup.
+Only a returned screenshot and a probe status of `VERIFIED` justify calling the screenshot path end-to-end verified. Interactive capabilities require separate successful action evidence, not merely a connected WebSocket. The current report contains a **VERIFIED historical local smoke session**, a newer **PARTIAL** connection, and historical blocked attempts; it is not a compatibility guarantee for every DevTools release or host. See [docs/REALITY-CHECK.md](docs/REALITY-CHECK.md) before relying on a particular DevTools release or host setup.
 
 ## Limitations and Non-Goals
 
-Version `0.1.1` does not provide an MCP server, AI vision agent, DOM inspector, element picker, pixel-stream video, WXML-to-HTML renderer, remote-device streaming, cloud service, multi-simulator dashboard, or per-agent SDK integration. It also does not replace WeChat DevTools. The external DevTools runtime remains responsible for compilation and rendering.
+Version `2.0.0` does not provide an MCP server, AI vision agent, DOM inspector, element picker, pixel-stream video, WXML-to-HTML renderer, remote-device streaming, cloud service, multi-simulator dashboard, or per-agent SDK integration. It also does not replace WeChat DevTools. The external DevTools runtime remains responsible for compilation and rendering.
 
-The public Automator surface inspected for this release exposes page and screenshot operations but no compile-complete event. Refresh readiness is therefore inferred through bounded settling and screenshot stability. The local evidence does not establish behavior for other DevTools releases, operating systems, background/minimized-window modes, or projects with materially different build times.
+The public Automator surface inspected for this release exposes page and screenshot operations but no compile-complete event. Refresh readiness is therefore inferred through bounded settling and screenshot stability. Element discovery and interaction methods can be absent or can time out on a particular DevTools connection; v2 preserves the last good screenshot and reports that capability as unavailable rather than synthesizing simulator input. The local evidence does not establish behavior for other DevTools releases, operating systems, background/minimized-window modes, or projects with materially different build times.
 
 ## Development and Testing
 

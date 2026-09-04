@@ -31,6 +31,32 @@ node out/scripts/probe-wechat-runtime.js \
 - The inspected automator implementation requests `App.getCurrentPage`, `App.getPageStack`, and `App.captureScreenshot`. It forwards `App.logAdded` as `console` events and `App.exceptionThrown` as `exception` events.
 - No `compile()` method or compile-complete event was found in the inspected `miniprogram-automator@0.12.1` declarations/source. The extension therefore must not claim a compile-ready API unless a later runtime probe demonstrates one.
 
+## v2 Capability Status (2026-09-04)
+
+This matrix distinguishes implementation/unit coverage from a successful action
+against the currently connected DevTools runtime. A capability is only
+end-to-end verified after the action and resulting simulator frame are observed
+in the same dated session.
+
+| Capability | Status | Evidence / boundary |
+| --- | --- | --- |
+| Automator connection | **VERIFIED (historical)**; **PARTIAL (latest)** | The 2026-09-03 smoke session connected at `ws://127.0.0.1:9426`. The latest v2 probe also connected to Automator. |
+| `currentPage()` / `pageStack()` | **VERIFIED (historical)**; **PARTIAL (latest)** | Historical session returned `pages/index/index`; the latest v2 probe read the active page before its screenshot request failed. |
+| Simulator screenshot | **VERIFIED (historical)**; **UNAVAILABLE / BLOCKED (latest)** | A historical 780x1506 PNG was saved. The latest fresh capture timed out/failed after DevTools reported `saveFile:fail exceeded the maximum size of the file storage limit`; no new screenshot claim is made. |
+| VS Code sidebar and editor preview | **VERIFIED (historical)** | Both displayed the historical real simulator image and reported `Connected`. The latest v2 UI session is not independently re-verified. |
+| WXML/WXSS and direct filesystem-write refresh | **VERIFIED (historical)** | Historical smoke measurements are retained below. The latest v2 implementation has not yet repeated these checks with a fresh frame. |
+| Reconnect | **VERIFIED (historical)** | The 2026-09-03 session recovered after a runtime restart. The latest v2 connection has not repeated the check. |
+| Compile-error behavior | **VERIFIED (historical limitation)** | DevTools displayed a WXML error; Automator emitted no structured compile error and the extension retained the previous frame. |
+| Tap / element resolution | **IMPLEMENTED / NOT VERIFIED** | v2 uses public `page.$$`, element geometry, and `tap()`, with a bounded timeout. The observed selector/element APIs can time out or wedge on the current runtime, so no real tap claim is made. |
+| Scroll | **IMPLEMENTED / NOT VERIFIED** | v2 uses `pageScrollTo()` and avoids probing the known-problematic `scrollTop()` path. No successful current-runtime scroll has been observed. |
+| Native input | **IMPLEMENTED / NOT VERIFIED** | v2 only calls native `input()` after a real input/textarea target resolves. No successful current-runtime typing action has been observed. |
+| Back navigation | **IMPLEMENTED / NOT VERIFIED** | v2 uses public `navigateBack()` when supplied by the runtime. No successful current-runtime action has been observed. |
+| Direct `navigateTo`, `redirectTo`, `switchTab` APIs | **UNAVAILABLE IN THE v2 PREVIEW UI** | The client exposes adapters for future callers, but v2 does not expose direct URL/tab controls in its Webview. They are not end-to-end verified. |
+
+The current DevTools IDE Service Port is `25358`. It is an HTTP IDE endpoint,
+not an Automator WebSocket endpoint, and must not be configured as
+`miniProgramPreview.automatorPort`.
+
 ## Latest local E2E smoke session (2026-09-03)
 
 A real Mini Program project (`zhifan-wechat-current`) was exercised while the

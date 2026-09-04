@@ -3,14 +3,19 @@ import * as vscode from "vscode";
 import { AutomatorClient, type AutomatorRuntime, type ScreenshotResult } from "../devtools/AutomatorClient";
 import { DevToolsController } from "../devtools/DevToolsController";
 import { PreviewError, errorMessage } from "../errors/PreviewError";
-import {
-  RefreshScheduler,
-  type RefreshContext,
-  type RefreshSchedulerSnapshot,
-} from "../refresh/RefreshScheduler";
+import type { RefreshContext } from "../refresh/RefreshScheduler";
 import { PerformanceTracker } from "../telemetry/PerformanceTracker";
 import type { PreviewConsumer, PreviewImage, PreviewViewState } from "../preview/PreviewProvider";
+import type {
+  InputPreviewMessage,
+  ScrollPreviewMessage,
+  TapPreviewMessage,
+} from "../preview/PreviewMessages";
 import type { PreviewSettings } from "../config/settings";
+import { CoordinateMapper } from "../interaction/CoordinateMapper";
+import { InteractionController } from "../interaction/InteractionController";
+import type { PreviewInteraction, RuntimePoint, Size } from "../interaction/InteractionTypes";
+import { RuntimeOperationScheduler, type RuntimeOperationSnapshot } from "../interaction/RuntimeOperationScheduler";
 
 export type PreviewSessionState = PreviewViewState["state"];
 
@@ -26,9 +31,10 @@ export class PreviewSession implements vscode.Disposable {
   private readonly controller: DevToolsController;
   private readonly client: AutomatorClient;
   private readonly tracker: PerformanceTracker;
+  private readonly interactionController: InteractionController;
   private readonly consumers = new Set<PreviewConsumer>();
   private readonly stateListeners = new Set<(state: PreviewViewState) => void>();
-  private scheduler: RefreshScheduler<ScreenshotResult>;
+  private scheduler: RuntimeOperationScheduler<ScreenshotResult>;
   private disposed = false;
   private currentState: PreviewViewState = { state: "disconnected", label: "Disconnected" };
   private projectPath: string | undefined;
@@ -38,6 +44,8 @@ export class PreviewSession implements vscode.Disposable {
   private reconnecting = false;
   private reconnectAttempt = 0;
   private lastError: PreviewError | undefined;
+  /** The active Automator input target is session-local and never belongs to a frame alone. */
+  private typing = false;
   /** Invalidates asynchronous starts/reconnects when the session is stopped or replaced. */
   private lifecycleGeneration = 0;
 
@@ -51,6 +59,11 @@ export class PreviewSession implements vscode.Disposable {
       maxAttempts: options.settings.maxRefreshRetries,
     });
     this.tracker = options.tracker ?? new PerformanceTracker();
+    this.interactionController = new InteractionController({
+      currentPage: () => this.client.currentInteractionPage(),
+      navigateBack: () => this.client.navigateBack(),
+      pageScrollTo: (scrollTop) => this.client.pageScrollTo(scrollTop),
+    });
     this.scheduler = this.createScheduler();
   }
 
@@ -105,11 +118,12 @@ export class PreviewSession implements vscode.Disposable {
       }
 
       this.client.attach(runtime);
+      this.interactionController.resetForReconnect();
       this.attachRuntimeListeners(runtime, lifecycleGeneration, projectPath);
       this.reconnectAttempt = 0;
       this.lastError = undefined;
       this.setState({ state: "connected", label: "Connected" });
-      this.scheduler.requestImmediate("initial");
+      this.scheduler.requestImmediateRefresh("initial");
     } catch (error) {
       // A stop/new start/dispose deliberately supersedes this request. Its failure
       // belongs to the obsolete caller and must not replace the current UI state.
@@ -129,6 +143,8 @@ export class PreviewSession implements vscode.Disposable {
     this.lifecycleGeneration += 1;
     this.projectPath = undefined;
     this.latestImage = undefined;
+    this.typing = false;
+    this.interactionController.clearInputTarget();
     this.reconnecting = false;
     this.clearReconnectTimer();
     this.reconnectAttempt = 0;
@@ -141,14 +157,57 @@ export class PreviewSession implements vscode.Disposable {
   }
 
   public refresh(reason = "manual"): number {
-    return this.scheduler.requestImmediate(reason);
+    return this.scheduler.requestImmediateRefresh(reason);
+  }
+
+  /** Queue an explicit runtime back operation and capture the resulting frame. */
+  public back(): number | undefined {
+    if (!this.isConnected) {
+      return undefined;
+    }
+    return this.enqueueInteraction({ kind: "back" });
+  }
+
+  /** Leave keyboard capture mode without changing the real Mini Program value. */
+  public exitTyping(): void {
+    this.typing = false;
+    this.interactionController.clearInputTarget();
+    if (this.isConnected && this.scheduler.state === "idle") {
+      this.setState(connectedState());
+    }
+  }
+
+  /** Accepts a validated, generation-bound interaction from either preview surface. */
+  public handleInteraction(message: TapPreviewMessage | ScrollPreviewMessage | InputPreviewMessage): number | undefined {
+    if (!this.isConnected) {
+      return undefined;
+    }
+    if (!this.latestImage || this.latestImage.generation !== message.generation) {
+      this.showNotice("The preview changed before this interaction could be applied. Try again on the latest frame.");
+      return undefined;
+    }
+
+    if (message.type === "input") {
+      if (!this.typing) {
+        this.showNotice("Select a real input or textarea in the preview before typing.");
+        return undefined;
+      }
+      // Generation is checked at message receipt, when the Webview proves it
+      // belongs to the frame the user can see. Once accepted, text belongs to
+      // the active input session rather than that frame: an input capture
+      // naturally publishes a newer frame before a rapid following keystroke
+      // reaches the front of this serialized queue.
+      return this.enqueueTypingInput(message.value);
+    }
+
+    return this.enqueueInteractionForCoordinates(message);
   }
 
   public sourceChanged(reason = "filesystem"): number | undefined {
     if (!this.options.settings.autoRefresh || !this.isConnected) {
       return undefined;
     }
-    const generation = this.scheduler.request(reason);
+    const generation = this.scheduler.requestRefresh(reason);
     this.tracker.detected(generation);
     return generation;
   }
@@ -161,6 +220,7 @@ export class PreviewSession implements vscode.Disposable {
     const lifecycleGeneration = ++this.lifecycleGeneration;
     const projectPath = this.projectPath;
     this.reconnecting = true;
+    this.scheduler.invalidate();
     this.clearReconnectTimer();
     try {
       const maxAttempts = 4;
@@ -182,11 +242,12 @@ export class PreviewSession implements vscode.Disposable {
           }
 
           this.client.attach(runtime);
+          this.interactionController.resetForReconnect();
           this.attachRuntimeListeners(runtime, lifecycleGeneration, projectPath);
           this.lastError = undefined;
           this.reconnectAttempt = 0;
           this.setState({ state: "connected", label: "Connected" });
-          this.scheduler.requestImmediate("reconnect");
+          this.scheduler.requestImmediateRefresh("reconnect");
           return;
         } catch (error) {
           if (!this.isCurrentLifecycle(lifecycleGeneration, projectPath)) {
@@ -219,6 +280,8 @@ export class PreviewSession implements vscode.Disposable {
     this.lifecycleGeneration += 1;
     this.projectPath = undefined;
     this.latestImage = undefined;
+    this.typing = false;
+    this.interactionController.clearInputTarget();
     this.reconnecting = false;
     this.clearReconnectTimer();
     this.scheduler.dispose();
@@ -228,39 +291,144 @@ export class PreviewSession implements vscode.Disposable {
     this.stateListeners.clear();
   }
 
-  private createScheduler(): RefreshScheduler<ScreenshotResult> {
-    return new RefreshScheduler<ScreenshotResult>({
+  private createScheduler(): RuntimeOperationScheduler<ScreenshotResult> {
+    return new RuntimeOperationScheduler<ScreenshotResult>({
       debounceMs: this.options.settings.refreshDelay,
-      perform: async (context) => {
+      // AutomatorClient bounds the individual runtime calls. Avoid wrapping
+      // the whole capture a second time, which would add an extra Promise turn
+      // to every normal preview refresh.
+      operationTimeoutMs: 0,
+      capture: async (context) => {
         this.tracker.refreshing(context.generation);
-        return this.client.capture(context);
+        return this.client.capture({
+          generation: context.generation,
+          requestedAt: context.requestedAt,
+          reasons: context.reasons,
+          signal: context.signal,
+          isCurrent: context.isCurrent,
+          isStale: context.isStale,
+        });
       },
       commit: async (result, context) => {
         const image: PreviewImage = {
           generation: context.generation,
           data: result.data,
+          screenshotSize: result.screenshotSize,
           pagePath: result.pagePath,
           captureLatencyMs: result.captureLatencyMs,
         };
         this.latestImage = image;
         this.tracker.captured(context.generation, result.captureLatencyMs, result.capturedAt);
-        this.setState({ state: "connected", label: "Connected" });
+        this.setState(this.typing ? typingState() : connectedState());
         for (const consumer of this.consumers) {
           consumer.showPreview(image);
         }
       },
       onError: async (error) => {
-        this.handleError(error);
+        this.handleOperationError(error);
       },
       onStateChange: (snapshot) => this.handleSchedulerState(snapshot),
     });
   }
 
-  private handleSchedulerState(snapshot: RefreshSchedulerSnapshot): void {
+  private handleSchedulerState(snapshot: RuntimeOperationSnapshot): void {
     if (snapshot.state === "refreshing" && this.isConnected) {
       this.setState({ state: "updating", label: "Updating" });
-    } else if (snapshot.state === "idle" && this.isConnected && this.currentState.state === "updating") {
-      this.setState({ state: "connected", label: "Connected" });
+    } else if (snapshot.state === "interacting" && this.isConnected) {
+      this.setState({ state: "interacting", label: "Interacting" });
+    } else if (snapshot.state === "idle" && this.isConnected && (this.currentState.state === "updating" || this.currentState.state === "interacting")) {
+      this.setState(this.typing ? typingState() : connectedState());
+    }
+  }
+
+  private enqueueInteractionForCoordinates(message: TapPreviewMessage | ScrollPreviewMessage): number {
+    const kind = message.type;
+    return this.scheduler.enqueueInteraction(kind, async () => {
+      const coordinates = await this.resolveRuntimeCoordinates(message);
+      const interaction: PreviewInteraction = message.type === "tap"
+        ? { kind: "tap", point: coordinates.point }
+        : {
+          kind: "scroll",
+          point: coordinates.point,
+          deltaX: scaleScreenshotDelta(message.deltaX, coordinates.screenshotSize.width, coordinates.runtimeSize.width),
+          deltaY: scaleScreenshotDelta(message.deltaY, coordinates.screenshotSize.height, coordinates.runtimeSize.height),
+        };
+      await this.performInteraction(interaction);
+    });
+  }
+
+  private enqueueInteraction(interaction: PreviewInteraction, generation?: number): number {
+    return this.scheduler.enqueueInteraction(interaction.kind, async () => {
+      if (generation !== undefined) {
+        this.requireCurrentImage(generation);
+      }
+      await this.performInteraction(interaction);
+    });
+  }
+
+  private enqueueTypingInput(value: string): number {
+    return this.scheduler.enqueueInteraction("input", async () => {
+      await this.performInteraction({ kind: "input", value });
+    });
+  }
+
+  private async performInteraction(interaction: PreviewInteraction): Promise<void> {
+    const result = await this.interactionController.perform(interaction);
+    this.typing = result.typing;
+  }
+
+  private async resolveRuntimeCoordinates(message: TapPreviewMessage | ScrollPreviewMessage): Promise<{
+    readonly point: RuntimePoint;
+    readonly screenshotSize: Size;
+    readonly runtimeSize: Size;
+  }> {
+    const image = this.requireCurrentImage(message.generation);
+    const screenshotSize = image.screenshotSize;
+    if (!screenshotSize || !isUsableSize(screenshotSize)) {
+      throw interactionUnsupported("This preview frame does not have valid screenshot dimensions.");
+    }
+
+    const systemInfo = await this.client.systemInfo();
+    const runtimeSize = runtimeSizeFromSystemInfo(systemInfo);
+    if (!runtimeSize) {
+      throw interactionUnsupported("WeChat DevTools did not provide the runtime viewport size for this interaction.");
+    }
+    // Do not send an action for a frame that was replaced while systemInfo was in flight.
+    this.requireCurrentImage(message.generation);
+    const point = CoordinateMapper.mapScreenshotPointToRuntime(
+      { x: message.screenshotX, y: message.screenshotY },
+      screenshotSize,
+      runtimeSize,
+    );
+    if (!point) {
+      throw interactionUnsupported("The preview coordinate could not be mapped to the WeChat runtime.");
+    }
+    return { point, screenshotSize, runtimeSize };
+  }
+
+  private requireCurrentImage(generation: number): PreviewImage {
+    const image = this.latestImage;
+    if (!image || image.generation !== generation) {
+      throw interactionUnsupported("The preview changed before this interaction could be applied. Try again on the latest frame.");
+    }
+    return image;
+  }
+
+  private handleOperationError(error: unknown): void {
+    const previewError = PreviewError.from(error, "automation-unavailable");
+    if (previewError.code === "interaction-unsupported") {
+      this.showNotice(formatErrorForUser(previewError));
+      if (this.isConnected) {
+        this.setState(this.typing ? typingState() : connectedState());
+      }
+      return;
+    }
+    this.handleError(previewError);
+  }
+
+  private showNotice(message: string): void {
+    for (const consumer of this.consumers) {
+      consumer.showNotice?.(message);
     }
   }
 
@@ -379,4 +547,49 @@ function extractRuntimeMessage(payload: unknown): string | undefined {
 
 async function wait(delayMs: number): Promise<void> {
   await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
+}
+
+function connectedState(): PreviewViewState {
+  return { state: "connected", label: "Connected" };
+}
+
+function typingState(): PreviewViewState {
+  return { state: "typing", label: "Typing" };
+}
+
+function interactionUnsupported(message: string): PreviewError {
+  return new PreviewError("interaction-unsupported", message);
+}
+
+function isUsableSize(size: { readonly width: number; readonly height: number }): boolean {
+  return Number.isFinite(size.width)
+    && Number.isFinite(size.height)
+    && size.width > 0
+    && size.height > 0;
+}
+
+function runtimeSizeFromSystemInfo(
+  systemInfo: { readonly windowWidth?: number; readonly windowHeight?: number },
+): Size | undefined {
+  const width = finitePositiveNumber(systemInfo.windowWidth);
+  const height = finitePositiveNumber(systemInfo.windowHeight);
+  return width && height ? { width, height } : undefined;
+}
+
+function finitePositiveNumber(value: unknown): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    return undefined;
+  }
+  return value;
+}
+
+function scaleScreenshotDelta(delta: number, screenshotDimension: number, runtimeDimension: number): number {
+  if (!Number.isFinite(delta) || !isUsableDimension(screenshotDimension) || !isUsableDimension(runtimeDimension)) {
+    return 0;
+  }
+  return Math.round(delta * runtimeDimension / screenshotDimension);
+}
+
+function isUsableDimension(value: number): boolean {
+  return Number.isFinite(value) && value > 0;
 }

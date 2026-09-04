@@ -31,11 +31,13 @@ export type DevToolsControllerState = "disconnected" | "connecting" | "connected
 const defaultFactory: AutomatorFactory = {
   async launch(options) {
     const module = await import("miniprogram-automator");
-    return module.default.launch(options) as unknown as AutomatorRuntime;
+    const automator = (module.default ?? module) as unknown as AutomatorFactory;
+    return automator.launch(options);
   },
   async connect(options) {
     const module = await import("miniprogram-automator");
-    return module.default.connect(options) as unknown as AutomatorRuntime;
+    const automator = (module.default ?? module) as unknown as AutomatorFactory;
+    return automator.connect(options);
   },
 };
 

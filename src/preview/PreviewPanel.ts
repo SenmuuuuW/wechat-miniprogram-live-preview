@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 
 import type { PreviewConsumer, PreviewImage, PreviewProviderCallbacks, PreviewViewState } from "./PreviewProvider";
+import { parsePreviewWebviewMessage } from "./PreviewMessages";
 import { previewWebviewHtml } from "./webviewHtml";
 
 /** Editor-area preview. It is a consumer of the same session as the sidebar. */
@@ -59,6 +60,10 @@ export class PreviewPanel implements vscode.Disposable, PreviewConsumer {
     this.post({ type: "error", message });
   }
 
+  public showNotice(message: string): void {
+    this.post({ type: "notice", message });
+  }
+
   public dispose(): void {
     if (this.disposed) {
       return;
@@ -73,30 +78,41 @@ export class PreviewPanel implements vscode.Disposable, PreviewConsumer {
   }
 
   private handleMessage(message: unknown): void {
-    if (!isMessage(message)) {
+    const parsed = parsePreviewWebviewMessage(message);
+    if (!parsed) {
       return;
     }
-    if (message.type === "reconnect") {
-      this.callbacks.onReconnect();
-      return;
-    }
-    if (message.type === "previewRendered" && typeof message.generation === "number") {
-      this.callbacks.onRendered(message.generation);
-      return;
-    }
-    if (message.type === "ready") {
-      this.post({ type: "state", ...this.latestState });
-      if (this.latestImage) {
-        this.post({ type: "preview", ...this.latestImage });
-      }
+    switch (parsed.type) {
+      case "reconnect":
+        this.callbacks.onReconnect();
+        return;
+      case "refresh":
+        this.callbacks.onRefresh?.();
+        return;
+      case "back":
+        this.callbacks.onBack?.();
+        return;
+      case "exitTyping":
+        this.callbacks.onExitTyping?.();
+        return;
+      case "tap":
+      case "scroll":
+      case "input":
+        this.callbacks.onInteraction?.(parsed);
+        return;
+      case "previewRendered":
+        this.callbacks.onRendered(parsed.generation);
+        return;
+      case "ready":
+        this.post({ type: "state", ...this.latestState });
+        if (this.latestImage) {
+          this.post({ type: "preview", ...this.latestImage });
+        }
+        return;
     }
   }
 
   private post(message: unknown): void {
     void this.panel.webview.postMessage(message);
   }
-}
-
-function isMessage(value: unknown): value is { type: string; generation?: unknown } {
-  return typeof value === "object" && value !== null && "type" in value;
 }

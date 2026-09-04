@@ -74,3 +74,109 @@ test("rejects an empty screenshot payload", async () => {
     (error: unknown) => error instanceof PreviewError && error.code === "screenshot-failed",
   );
 });
+
+test("adapts Automator CSS-pixel geometry for real element hit testing", async () => {
+  const runtime: AutomatorRuntime = {
+    currentPage: async () => ({
+      path: "pages/index/index",
+      $$: async () => [{
+        tagName: "button",
+        offset: async () => ({ left: "12.5px", top: "7px" }),
+        size: async () => ({ width: "140px", height: "44.25px" }),
+        tap: async () => undefined,
+      }],
+    }),
+    pageStack: async () => [],
+    screenshot: async () => undefined,
+    disconnect: () => undefined,
+  };
+  const client = new AutomatorClient();
+  client.attach(runtime);
+
+  const page = await client.currentInteractionPage();
+  const elements = await page?.$$("*");
+
+  assert.deepEqual(elements?.map((element) => element.rect), [{
+    left: 12.5,
+    top: 7,
+    width: 140,
+    height: 44.25,
+  }]);
+});
+
+test("does not turn arbitrary CSS text into a runtime coordinate", async () => {
+  const runtime: AutomatorRuntime = {
+    currentPage: async () => ({
+      path: "pages/index/index",
+      $$: async () => [{
+        tagName: "view",
+        offset: async () => ({ left: "calc(10px + 2px)", top: "0px" }),
+        size: async () => ({ width: "100px", height: "20px" }),
+        tap: async () => undefined,
+      }],
+    }),
+    pageStack: async () => [],
+    screenshot: async () => undefined,
+    disconnect: () => undefined,
+  };
+  const client = new AutomatorClient();
+  client.attach(runtime);
+
+  const page = await client.currentInteractionPage();
+  assert.deepEqual(await page?.$$("*"), []);
+});
+
+test("classifies a bounded capture timeout as screenshot failure while the socket remains open", async () => {
+  const runtime: AutomatorRuntime = {
+    currentPage: () => new Promise(() => undefined),
+    pageStack: () => new Promise(() => undefined),
+    screenshot: () => new Promise(() => undefined),
+    disconnect: () => undefined,
+  };
+  const client = new AutomatorClient({ captureTimeoutMs: 500, captureDelayMs: 0, maxAttempts: 1 });
+  client.attach(runtime);
+
+  await assert.rejects(
+    () => client.capture(),
+    (error: unknown) => error instanceof PreviewError && error.code === "screenshot-failed",
+  );
+});
+
+test("bounds current page and element operations independently", async () => {
+  const runtime: AutomatorRuntime = {
+    currentPage: () => new Promise(() => undefined),
+    pageStack: async () => [],
+    screenshot: async () => undefined,
+    disconnect: () => undefined,
+  };
+  const client = new AutomatorClient({ operationTimeoutMs: 100 });
+  client.attach(runtime);
+
+  await assert.rejects(
+    () => client.currentInteractionPage(),
+    (error: unknown) => error instanceof PreviewError && error.code === "interaction-unsupported",
+  );
+
+  const elementRuntime: AutomatorRuntime = {
+    currentPage: async () => ({
+      path: "pages/index/index",
+      $$: async () => [{
+        tagName: "button",
+        offset: async () => ({ left: 0, top: 0, width: 10, height: 10 }),
+        size: async () => ({ width: 10, height: 10 }),
+        tap: () => new Promise(() => undefined),
+      }],
+    }),
+    pageStack: async () => [],
+    screenshot: async () => undefined,
+    disconnect: () => undefined,
+  };
+  client.attach(elementRuntime);
+  const page = await client.currentInteractionPage();
+  const elements = await page?.$$("*");
+  assert.equal(elements?.length, 1);
+  await assert.rejects(
+    () => elements![0]!.tap(),
+    (error: unknown) => error instanceof PreviewError && error.code === "interaction-unsupported",
+  );
+});

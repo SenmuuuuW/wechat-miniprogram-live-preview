@@ -37,12 +37,18 @@ interface AutomatorEvidence {
 
 interface RuntimeProbeResult {
   readonly attempted: boolean;
-  readonly status: "VERIFIED" | "BLOCKED" | "UNKNOWN";
+  /**
+   * PARTIAL means an Automator connection was established but one of the
+   * requested runtime observations (normally the screenshot) could not be
+   * completed inside its bounded request timeout.
+   */
+  readonly status: "VERIFIED" | "PARTIAL" | "BLOCKED" | "UNKNOWN";
   readonly elapsedMs?: number;
   readonly currentPage?: unknown;
   readonly pageStack?: unknown;
   readonly screenshotPath?: string;
   readonly screenshotBytes?: number;
+  readonly screenshotSize?: { readonly width: number; readonly height: number };
   readonly consoleEvents?: number;
   readonly exceptions?: number;
   readonly error?: string;
@@ -52,8 +58,12 @@ interface RuntimeProbeResult {
 interface ProbeOptions {
   readonly cliPath?: string;
   readonly projectPath?: string;
+  /** Attach to an already-open Automator socket instead of launching DevTools. */
+  readonly connectEndpoint?: string;
   readonly port?: number;
   readonly timeoutMs: number;
+  /** Maximum duration for one Automator protocol request after connection. */
+  readonly operationTimeoutMs: number;
   readonly screenshotPath?: string;
   readonly keepOpen: boolean;
   readonly json: boolean;
@@ -80,8 +90,10 @@ const windowsCliPaths = [
 function parseOptions(argv: readonly string[]): ProbeOptions {
   let cliPath: string | undefined;
   let projectPath: string | undefined;
+  let connectEndpoint: string | undefined;
   let port: number | undefined;
   let timeoutMs = 30_000;
+  let operationTimeoutMs = 10_000;
   let screenshotPath: string | undefined;
   let keepOpen = false;
   let json = false;
@@ -95,6 +107,22 @@ function parseOptions(argv: readonly string[]): ProbeOptions {
       case "--project":
         projectPath = argv[++index];
         break;
+      case "--connect": {
+        const candidate = argv[++index];
+        if (!candidate) {
+          throw new Error("--connect requires a WebSocket endpoint, for example ws://127.0.0.1:9426");
+        }
+        try {
+          const endpoint = new URL(candidate);
+          if (endpoint.protocol !== "ws:" && endpoint.protocol !== "wss:") {
+            throw new Error("not a WebSocket URL");
+          }
+          connectEndpoint = endpoint.toString();
+        } catch {
+          throw new Error("--connect must be a valid ws:// or wss:// endpoint");
+        }
+        break;
+      }
       case "--port":
         port = Number(argv[++index]);
         if (!Number.isInteger(port) || port <= 0 || port > 65_535) {
@@ -105,6 +133,12 @@ function parseOptions(argv: readonly string[]): ProbeOptions {
         timeoutMs = Number(argv[++index]);
         if (!Number.isInteger(timeoutMs) || timeoutMs <= 0) {
           throw new Error("--timeout must be a positive integer in milliseconds");
+        }
+        break;
+      case "--operation-timeout":
+        operationTimeoutMs = Number(argv[++index]);
+        if (!Number.isInteger(operationTimeoutMs) || operationTimeoutMs <= 0) {
+          throw new Error("--operation-timeout must be a positive integer in milliseconds");
         }
         break;
       case "--screenshot":
@@ -126,7 +160,17 @@ function parseOptions(argv: readonly string[]): ProbeOptions {
     }
   }
 
-  return { cliPath, projectPath, port, timeoutMs, screenshotPath, keepOpen, json };
+  return {
+    cliPath,
+    projectPath,
+    connectEndpoint,
+    port,
+    timeoutMs,
+    operationTimeoutMs,
+    screenshotPath,
+    keepOpen,
+    json,
+  };
 }
 
 function printUsage(): void {
@@ -138,8 +182,11 @@ Safe checks (default):
 
 Optional real-runtime check:
   --project <path>      Mini Program directory containing project.config.json
+  --connect <ws-url>    Attach to an already-open Automator endpoint; does not relaunch DevTools
   --port <number>       Automation WebSocket port (default: automator chooses)
   --timeout <ms>        Launch/connect timeout (default: 30000)
+  --operation-timeout <ms>
+                        Per-request Automator timeout after connecting (default: 10000)
   --screenshot <path>   Write captured PNG when the runtime returns one
   --keep-open           Do not close the automator project after probing
 `);
@@ -373,7 +420,10 @@ function normalizeScreenshotData(value: string): string {
   return (match?.[1] ?? trimmed).replace(/\s+/g, "");
 }
 
-async function captureStableScreenshot(miniProgram: { screenshot(): Promise<string | void> }): Promise<string> {
+async function captureStableScreenshot(
+  miniProgram: { screenshot(): Promise<string | void> },
+  operationTimeoutMs: number,
+): Promise<string> {
   let previous: string | undefined;
   let latest: string | undefined;
 
@@ -382,7 +432,11 @@ async function captureStableScreenshot(miniProgram: { screenshot(): Promise<stri
     if (attempt > 0) {
       await delay(350);
     }
-    const screenshot = await miniProgram.screenshot();
+    const screenshot = await withTimeout(
+      Promise.resolve().then(() => miniProgram.screenshot()),
+      operationTimeoutMs,
+      "Automator screenshot",
+    );
     if (typeof screenshot !== "string" || screenshot.trim().length === 0) {
       continue;
     }
@@ -406,16 +460,56 @@ async function delay(delayMs: number): Promise<void> {
   await new Promise<void>((resolveDelay) => setTimeout(resolveDelay, delayMs));
 }
 
+function withTimeout<T>(operation: Promise<T>, timeoutMs: number, description: string): Promise<T> {
+  return new Promise<T>((resolveOperation, rejectOperation) => {
+    const timer = setTimeout(() => {
+      rejectOperation(new Error(`${description} did not respond within ${timeoutMs} ms.`));
+    }, timeoutMs);
+    void operation.then(
+      (value) => {
+        clearTimeout(timer);
+        resolveOperation(value);
+      },
+      (error: unknown) => {
+        clearTimeout(timer);
+        rejectOperation(error);
+      },
+    );
+  });
+}
+
+function pngDimensions(base64: string): { readonly width: number; readonly height: number } | undefined {
+  const bytes = Buffer.from(base64, "base64");
+  if (
+    bytes.length < 24
+    || bytes[0] !== 0x89
+    || bytes[1] !== 0x50
+    || bytes[2] !== 0x4e
+    || bytes[3] !== 0x47
+    || bytes[4] !== 0x0d
+    || bytes[5] !== 0x0a
+    || bytes[6] !== 0x1a
+    || bytes[7] !== 0x0a
+    || bytes.toString("ascii", 12, 16) !== "IHDR"
+  ) {
+    return undefined;
+  }
+
+  const width = bytes.readUInt32BE(16);
+  const height = bytes.readUInt32BE(20);
+  return width > 0 && height > 0 ? { width, height } : undefined;
+}
+
 async function runRuntimeProbe(
   options: ProbeOptions,
   cliPath: string | undefined,
   automatorEvidence: AutomatorEvidence,
 ): Promise<RuntimeProbeResult> {
-  if (!options.projectPath) {
+  if (!options.projectPath && !options.connectEndpoint) {
     return { attempted: false, status: "UNKNOWN" };
   }
 
-  if (!cliPath) {
+  if (!options.connectEndpoint && !cliPath) {
     return {
       attempted: true,
       status: "BLOCKED",
@@ -431,8 +525,8 @@ async function runRuntimeProbe(
     };
   }
 
-  const projectPath = resolveProjectPath(options.projectPath);
-  if (!existsSync(join(projectPath, "project.config.json"))) {
+  const projectPath = options.projectPath ? resolveProjectPath(options.projectPath) : undefined;
+  if (projectPath && !existsSync(join(projectPath, "project.config.json"))) {
     return {
       attempted: true,
       status: "BLOCKED",
@@ -442,6 +536,8 @@ async function runRuntimeProbe(
 
   const startedAt = Date.now();
   let miniProgram: any;
+  let ownsRuntime = false;
+  let connected = false;
   let consoleEvents = 0;
   let exceptions = 0;
 
@@ -455,25 +551,40 @@ async function runRuntimeProbe(
     }
     const automatorModule = commonJsRequire(automatorEvidence.entryPath);
     const automator = automatorModule?.default ?? automatorModule;
-    if (!automator || typeof automator.launch !== "function") {
+    if (!automator || (options.connectEndpoint ? typeof automator.connect !== "function" : typeof automator.launch !== "function")) {
       return {
         attempted: true,
         status: "BLOCKED",
-        error: "Resolved automator module does not expose launch().",
+        error: options.connectEndpoint
+          ? "Resolved automator module does not expose connect()."
+          : "Resolved automator module does not expose launch().",
       };
     }
 
-    const launchOptions: Record<string, unknown> = {
-      cliPath,
-      projectPath,
-      timeout: options.timeoutMs,
-      trustProject: true,
-    };
-    if (options.port !== undefined) {
-      launchOptions.port = options.port;
+    if (options.connectEndpoint) {
+      miniProgram = await withTimeout(
+        Promise.resolve().then(() => automator.connect({ wsEndpoint: options.connectEndpoint })),
+        options.timeoutMs,
+        "Automator connect",
+      );
+    } else {
+      const launchOptions: Record<string, unknown> = {
+        cliPath,
+        projectPath,
+        timeout: options.timeoutMs,
+        trustProject: true,
+      };
+      if (options.port !== undefined) {
+        launchOptions.port = options.port;
+      }
+      ownsRuntime = true;
+      miniProgram = await withTimeout(
+        Promise.resolve().then(() => automator.launch(launchOptions)),
+        options.timeoutMs,
+        "Automator launch",
+      );
     }
-
-    miniProgram = await automator.launch(launchOptions);
+    connected = true;
     if (typeof miniProgram.on === "function") {
       miniProgram.on("console", () => {
         consoleEvents += 1;
@@ -487,23 +598,36 @@ async function runRuntimeProbe(
     let pageStack: unknown;
     let screenshotPath: string | undefined;
     let screenshotBytes: number | undefined;
+    let screenshotSize: { readonly width: number; readonly height: number } | undefined;
 
     try {
-      const page = await miniProgram.currentPage();
+      const page = await withTimeout(
+        Promise.resolve().then(() => miniProgram.currentPage()),
+        options.operationTimeoutMs,
+        "Automator currentPage",
+      );
       currentPage = page ? summarizePage(page) : undefined;
     } catch (error) {
       currentPage = { error: errorMessage(error) };
     }
     try {
-      const stack = await miniProgram.pageStack();
+      const stack = await withTimeout(
+        Promise.resolve().then(() => miniProgram.pageStack()),
+        options.operationTimeoutMs,
+        "Automator pageStack",
+      );
       pageStack = Array.isArray(stack) ? stack.map((page) => summarizePage(page)) : [];
     } catch (error) {
       pageStack = { error: errorMessage(error) };
     }
     try {
-      const screenshotData = await captureStableScreenshot(miniProgram);
+      const screenshotData = await captureStableScreenshot(miniProgram, options.operationTimeoutMs);
       if (screenshotData.length > 0) {
         const base64 = screenshotData;
+        screenshotSize = pngDimensions(base64);
+        if (!screenshotSize) {
+          throw new Error("Automator returned data that is not a valid PNG screenshot.");
+        }
         const target = resolve(options.screenshotPath ?? join(process.cwd(), "work", "reality-spike", "simulator.png"));
         mkdirSync(dirname(target), { recursive: true });
         writeFileSync(target, Buffer.from(base64, "base64"));
@@ -513,7 +637,7 @@ async function runRuntimeProbe(
     } catch (error) {
       return {
         attempted: true,
-        status: "BLOCKED",
+        status: connected ? "PARTIAL" : "BLOCKED",
         elapsedMs: Date.now() - startedAt,
         currentPage,
         pageStack,
@@ -531,6 +655,7 @@ async function runRuntimeProbe(
       pageStack,
       ...(screenshotPath ? { screenshotPath } : {}),
       ...(screenshotBytes !== undefined ? { screenshotBytes } : {}),
+      ...(screenshotSize ? { screenshotSize } : {}),
       consoleEvents,
       exceptions,
       ...(screenshotPath ? {} : { error: "Automator returned no screenshot data." }),
@@ -545,14 +670,25 @@ async function runRuntimeProbe(
       error: errorMessage(error),
     };
   } finally {
-    if (miniProgram && !options.keepOpen && typeof miniProgram.close === "function") {
+    if (miniProgram && ownsRuntime && !options.keepOpen && typeof miniProgram.close === "function") {
       try {
-        await miniProgram.close();
+        await withTimeout(
+          Promise.resolve().then(() => miniProgram.close()),
+          Math.min(options.operationTimeoutMs, 5_000),
+          "Automator close",
+        );
       } catch (error) {
         // Cleanup errors are surfaced by the caller only when the probe itself
         // produced a result. Do not turn a successful screenshot into a claim
         // that the runtime was unavailable.
         process.stderr.write(`Probe cleanup warning: ${errorMessage(error)}\n`);
+      }
+    } else if (miniProgram && typeof miniProgram.disconnect === "function") {
+      // A probe attached to a user-owned DevTools window must never close it.
+      try {
+        miniProgram.disconnect();
+      } catch {
+        // The peer may have closed after a timed-out capability probe.
       }
     }
   }
@@ -586,8 +722,10 @@ function buildReport(options: ProbeOptions, cli: CliCandidate | undefined, autom
     runtime,
     options: {
       ...(options.projectPath ? { projectPath: resolveProjectPath(options.projectPath) } : {}),
+      ...(options.connectEndpoint ? { connectEndpoint: options.connectEndpoint } : {}),
       ...(options.port !== undefined ? { port: options.port } : {}),
       timeoutMs: options.timeoutMs,
+      operationTimeoutMs: options.operationTimeoutMs,
       ...(options.screenshotPath ? { screenshotPath: resolve(options.screenshotPath) } : {}),
     },
   };
@@ -642,7 +780,11 @@ function printHumanReport(report: Record<string, unknown>): void {
       console.log(`Runtime elapsed: ${runtime.elapsedMs} ms`);
     }
     if (runtime.screenshotPath) {
-      console.log(`Screenshot: ${runtime.screenshotPath} (${runtime.screenshotBytes ?? "?"} bytes)`);
+      const screenshotSize = asRecord(runtime.screenshotSize);
+      const dimensions = screenshotSize.width && screenshotSize.height
+        ? `; ${screenshotSize.width}x${screenshotSize.height}`
+        : "";
+      console.log(`Screenshot: ${runtime.screenshotPath} (${runtime.screenshotBytes ?? "?"} bytes${dimensions})`);
     }
     if (runtime.error) {
       console.log(`Runtime detail: ${runtime.error}`);

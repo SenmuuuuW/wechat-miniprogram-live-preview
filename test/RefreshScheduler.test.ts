@@ -35,6 +35,15 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
+async function flushScheduler(): Promise<void> {
+  // A refresh has separate microtasks for perform(), commit(), and finally.
+  // Keep this test independent of that implementation detail while retaining
+  // deterministic fake-clock control of the debounce timer.
+  for (let index = 0; index < 5; index += 1) {
+    await Promise.resolve();
+  }
+}
+
 test("coalesces a burst into one refresh with all reasons", async () => {
   const clock = new FakeClock();
   const calls: string[][] = [];
@@ -50,7 +59,7 @@ test("coalesces a burst into one refresh with all reasons", async () => {
   clock.advance(30);
   scheduler.request("change:b");
   clock.advance(100);
-  await Promise.resolve();
+  await flushScheduler();
   assert.deepEqual(calls, [["save", "change:a", "change:b"]]);
   assert.equal(scheduler.state, "idle");
 });
@@ -98,14 +107,12 @@ test("current failure returns to idle and allows a later request", async () => {
 
   scheduler.request("first");
   clock.advance(0);
-  await Promise.resolve();
-  await Promise.resolve();
+  await flushScheduler();
   assert.equal(scheduler.state, "idle");
   assert.equal(errors.length, 1);
   scheduler.request("second");
   clock.advance(0);
-  await Promise.resolve();
-  await Promise.resolve();
+  await flushScheduler();
   assert.equal(scheduler.state, "idle");
 });
 
@@ -122,11 +129,10 @@ test("dispose aborts a running context and suppresses late commits", async () =>
   });
   scheduler.request("start");
   clock.advance(0);
-  await Promise.resolve();
+  await flushScheduler();
   scheduler.dispose();
   work.resolve("late");
-  await Promise.resolve();
-  await Promise.resolve();
+  await flushScheduler();
   assert.equal(signal.aborted, true);
   assert.deepEqual(commits, []);
   assert.equal(scheduler.state, "disposed");

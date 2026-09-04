@@ -2,7 +2,7 @@
   "name": "wechat-miniprogram-live-preview",
   "displayName": "WeChat Mini Program Live Preview",
   "description": "See a real WeChat Mini Program runtime inside VS Code while coding with filesystem-based AI agents.",
-  "version": "0.1.1",
+  "version": "2.0.0",
   "publisher": "senmuuuw",
   "license": "MIT",
   "repository": {
@@ -128,7 +128,7 @@
   },
   "scripts": {
     "compile": "node node_modules/typescript/bin/tsc -p ./tsconfig.json",
-    "test": "npm run compile && node --test out/test/AutomatorClient.test.js out/test/DevToolsController.test.js out/test/DevToolsLocator.test.js out/test/PreviewSession.test.js out/test/ProjectDetector.test.js out/test/project/ProjectDetector.test.js out/test/refresh/RefreshScheduler.test.js",
+    "test": "npm run compile && node --test out/test/*.test.js out/test/interaction/*.test.js out/test/preview/*.test.js out/test/project/*.test.js out/test/refresh/*.test.js",
     "lint": "node node_modules/typescript/bin/tsc -p ./tsconfig.json --noEmit",
     "package": "node node_modules/@vscode/vsce/vsce package --dependencies",
     "spike": "npm run compile && node out/scripts/probe-wechat-runtime.js"

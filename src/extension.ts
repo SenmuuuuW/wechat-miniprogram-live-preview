@@ -18,6 +18,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   activeProvider = new PreviewProvider({
     onReconnect: () => void reconnectPreview(),
     onRendered: (generation) => activeSession?.notifyRendered(generation),
+    onRefresh: () => { activeSession?.refresh("webview"); },
+    onBack: () => { activeSession?.back(); },
+    onExitTyping: () => { activeSession?.exitTyping(); },
+    onInteraction: (message) => { activeSession?.handleInteraction(message); },
   });
   context.subscriptions.push(
     activeSession,
@@ -85,6 +89,10 @@ function openPreview(): void {
   activePanel = PreviewPanel.create({
     onReconnect: () => void reconnectPreview(),
     onRendered: (generation) => activeSession?.notifyRendered(generation),
+    onRefresh: () => { activeSession?.refresh("webview"); },
+    onBack: () => { activeSession?.back(); },
+    onExitTyping: () => { activeSession?.exitTyping(); },
+    onInteraction: (message) => { activeSession?.handleInteraction(message); },
   });
   activePanel.attachToSession(activeSession.attachConsumer(activePanel));
   activePanel.reveal();
